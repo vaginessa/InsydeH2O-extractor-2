@@ -3,9 +3,10 @@
     License: WTFPL
     Modified: genBTC , 9/15/2019 
     - v0.3 (adds additional extractions and changes command line arguments)
+    - v0.31 (adds the injector for platforms.ini)
 */
 
-#define PROGRAM_NAME "InsydeFlashExtractor v0.3+genBTC"
+#define PROGRAM_NAME "InsydeFlashExtractor v0.31+genBTC\n"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,56 +106,161 @@ int main(int argc, char* argv[])
 {
     FILE*    in_file;
     FILE*    out_file;
-    uint8_t* in_buffer;
+    FILE*    ini_file;
+    uint8_t* insyde_buffer;
+    uint8_t* ini_file_buffer;
     uint8_t* end;
+    uint8_t* end_ini;
     uint8_t* found;
-    long filesize;
-    long read;
+    uint32_t filesize;
+    uint32_t filesize_ini;
+    uint32_t readsize;
+    uint32_t readsize_ini;
+    uint32_t headersize;
     IFLASH_BIOSIMG_HEADER* bios_header;
     IFLASH_INI_IMG_HEADER* ini_header;
     IFLASH_EC_IMG_HEADER* ec_header;
+    char* read_file_name;
+    char* insyde_file_name = "isflash.bin";
+    char* biosFD_file_name = "BIOSFILE.FD";
+    char* ini_file_name = "platforms.ini";
+    char* EC_file_name = "EC.BIN";
+    int inject_ini;
 
+    printf(PROGRAM_NAME);
     /* Check for arguments count */
-    if (argc < 2)
+    if (argc == 1)
     {
-        printf(PROGRAM_NAME);
-        printf("\nUsage: %s ISFLASH.BINFILE\n", argv[0]);
-        return ERR_INVALID_PARAMETER;
+        printf("Usage: %s <INPUTBIOSFILE> - Defaulting to %s\n", argv[0], insyde_file_name);
+        //return ERR_INVALID_PARAMETER;
+        read_file_name = insyde_file_name;
+    }
+    else {
+        read_file_name = argv[1];
+    }
+    /* Detect if we are injecting the .ini back in */
+    inject_ini = 0;
+    if (argc >= 3)
+    {
+        inject_ini = 1;
+        //read_file_name = ini_file_name;
     }
 
-    /* Open input file */
-    in_file = fopen(argv[1], "rb");
-    if(!in_file)
+    /* Open .bin file as input */
+    if(fopen_s(&in_file, read_file_name, "rb"))
     {
-        perror("Input file can't be opened");
+        printf("InsydeFlash input file can't be opened: %s", read_file_name);
         return ERR_FILE_OPEN;
     }
 
-    /* Get input file size */
+    /* Get input .bin file size */
     fseek(in_file, 0, SEEK_END);
     filesize = ftell(in_file);
     fseek(in_file, 0, SEEK_SET);
 
     /* Allocate memory for input buffer */
-    in_buffer = (uint8_t*)malloc(filesize);
-    if (!in_buffer)
+    insyde_buffer = (uint8_t*)malloc(filesize);
+    if (!insyde_buffer)
     {
-        perror("Can't allocate memory for input file");
+        printf("Can't allocate memory to read InsydeFlash file: %s", read_file_name);
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* Read the whole input file into input buffer */
-    read = fread((void*)in_buffer, sizeof(char), filesize, in_file);
-    if (read != filesize)
+    /* Read the whole BIOS file into input buffer */
+    readsize = fread((void*)insyde_buffer, sizeof(char), filesize, in_file);
+    if (readsize != filesize)
     {
-        perror("Can't read input file");
+        printf("Can't read InsydeFlash file: %s", read_file_name);
         return ERR_FILE_READ;
     }
-    end = in_buffer + filesize - 1;
+    end = insyde_buffer + filesize - 1;
+
+//Part 0A: Inject .INI back in: (if asked for)
+    if (inject_ini)
+    {
+        printf("Starting .ini file re-injection back into %s\n", insyde_file_name);
+        /* Open .ini input file */
+        if (fopen_s(&ini_file, ini_file_name, "rb"))
+        {
+            printf("%s input file can't be opened", ini_file_name);
+            return ERR_FILE_OPEN;
+        }
+        /* Get input .ini file size */
+        fseek(ini_file, 0, SEEK_END);
+        filesize_ini = ftell(ini_file);
+        fseek(ini_file, 0, SEEK_SET);
+
+        ini_file_buffer = (uint8_t*)malloc(filesize_ini);
+        if (!ini_file_buffer)
+        {
+            printf("Can't allocate memory to read %s file", ini_file_name);
+            return ERR_OUT_OF_MEMORY;
+        }
+
+        /* Read the whole .ini file into input buffer */
+        readsize_ini = fread((void*)ini_file_buffer, sizeof(char), filesize_ini, ini_file);
+        if (readsize_ini != filesize_ini)
+        {
+            printf("Can't read %s file", ini_file_name);
+            return ERR_FILE_READ;
+        }
+        end_ini = ini_file_buffer + filesize_ini - 1;
+
+//PART 0B: copied from Part 2:
+        /* Search for the signature in the input buffer */
+        found = find_pattern(insyde_buffer, end, IFLASH_INI_IMG_SIGNATURE, IFLASH_INI_IMG_SIGNATURE_LENGTH);
+        if (!found)
+        {
+            printf("Insyde .ini file signature not found in input file\n");
+            return ERR_NOT_FOUND;
+        }
+
+        /* Populate the header and read used size */
+        ini_header = (IFLASH_INI_IMG_HEADER*)found;
+        //found += sizeof(IFLASH_INI_IMG_HEADER);
+        //TODO: check if less, and start zero-ing bytes out.
+        ini_header->UsedSize = filesize_ini;    //set the size used header to the new ini's size
+        filesize = ini_header->UsedSize;
+
+        if (filesize_ini > ini_header->FullSize)
+        {
+            printf(".ini file size %lu exceeds max allowable size %lu", filesize_ini, ini_header->FullSize);
+            return ERR_FILE_WRITE;
+        }
+
+        /* Open output file */
+        if (fopen_s(&out_file, insyde_file_name, "wb"))
+        {
+            printf("Output file can't be opened: %s", insyde_file_name);
+            return ERR_FILE_OPEN;
+        }
+        // Seek to the found location to start writing.
+        fseek(out_file, found-insyde_buffer, SEEK_SET);
+
+        /* Write Header with new size back*/
+        headersize = fwrite(found, sizeof(char), sizeof(IFLASH_INI_IMG_HEADER), out_file);
+        if (headersize != sizeof(IFLASH_INI_IMG_HEADER))
+        {
+            printf("Can't write .ini header to output file: %s", insyde_file_name);
+            return ERR_FILE_WRITE;
+        }
+        /* Write .INI file image to output file */
+        filesize = fwrite(found + sizeof(IFLASH_INI_IMG_HEADER), sizeof(char), filesize_ini, out_file);
+        if (filesize != filesize_ini)
+        {
+            printf("Can't write .ini file to output file: %s", insyde_file_name);
+            return ERR_FILE_WRITE;
+        }
+
+        /* Done */
+        printf("File %s successfully injected back into %s\n", ini_file_name, insyde_file_name);
+        return ERR_SUCCESS;
+    }
+
 
 //Part 1: $_IFLASH_BIOSIMG
     /* Search for the signature in the input buffer */
-    found = find_pattern(in_buffer, end, IFLASH_BIOSIMG_SIGNATURE, IFLASH_BIOSIMG_SIGNATURE_LENGTH);
+    found = find_pattern(insyde_buffer, end, IFLASH_BIOSIMG_SIGNATURE, IFLASH_BIOSIMG_SIGNATURE_LENGTH);
     if (!found)
     {
         printf("Insyde BIOS image signature not found in input file\n");
@@ -167,30 +273,29 @@ int main(int argc, char* argv[])
     filesize = bios_header->UsedSize;
 
     /* Open output file */
-    out_file = fopen("BIOSFILE.FD", "wb");
-    if (!out_file)
+    if (fopen_s(&out_file, biosFD_file_name, "wb"))
     {
-        perror("Output file can't be opened");
+        printf("Output %s file can't be opened", biosFD_file_name);
         return ERR_FILE_OPEN;
     }
 
     /* Write BIOS image to output file */
-    read = fwrite(found, sizeof(char), filesize, out_file);
-    if (read != filesize)
+    readsize = fwrite(found, sizeof(char), filesize, out_file);
+    if (readsize != filesize)
     {
-        perror("Can't write output file BIOSFILE.FD");
+        printf("Can't write output file %s", biosFD_file_name);
         return ERR_FILE_WRITE;
     }
     
     /* Done */
-    printf("File BIOSFILE.FD successfully extracted\n");
+    printf("File %s successfully extracted\n", biosFD_file_name);
 
 //Part 2: $_IFLASH_INI_IMG
     /* Search for the signature in the input buffer */
-    found = find_pattern(in_buffer, end, IFLASH_INI_IMG_SIGNATURE, IFLASH_INI_IMG_SIGNATURE_LENGTH);
+    found = find_pattern(insyde_buffer, end, IFLASH_INI_IMG_SIGNATURE, IFLASH_INI_IMG_SIGNATURE_LENGTH);
     if (!found)
     {
-        printf("Insyde platforms.ini file signature not found in input file\n");
+        printf("Insyde .ini file signature not found in input file\n");
         return ERR_NOT_FOUND;
     }
 
@@ -200,27 +305,26 @@ int main(int argc, char* argv[])
     filesize = ini_header->UsedSize;
 
     /* Open output file */
-    out_file = fopen("platforms.ini", "wb");
-    if (!out_file)
+    if (fopen_s(&out_file, ini_file_name, "wb"))
     {
-        perror("Output file can't be opened");
+        printf("Output file %s can't be opened", ini_file_name);
         return ERR_FILE_OPEN;
     }
 
     /* Write INI file image to output file */
-    read = fwrite(found, sizeof(char), filesize, out_file);
-    if (read != filesize)
+    readsize = fwrite(found, sizeof(char), filesize, out_file);
+    if (readsize != filesize)
     {
-        perror("Can't write output file platforms.ini");
+        printf("Can't write output file %s", ini_file_name);
         return ERR_FILE_WRITE;
     }
 
     /* Done */
-    printf("File platforms.ini successfully extracted\n");
+    printf("File %s successfully extracted\n", ini_file_name);
 
 //Part 3: $_IFLASH_EC_IMG_
     /* Search for the signature in the input buffer */
-    found = find_pattern(in_buffer, end, IFLASH_EC_IMG_SIGNATURE, IFLASH_EC_IMG_SIGNATURE_LENGTH);
+    found = find_pattern(insyde_buffer, end, IFLASH_EC_IMG_SIGNATURE, IFLASH_EC_IMG_SIGNATURE_LENGTH);
     if (!found)
     {
         printf("Insyde EC image signature not found in input file\n");
@@ -233,22 +337,21 @@ int main(int argc, char* argv[])
     filesize = ec_header->UsedSize;
 
     /* Open output file */
-    out_file = fopen("EC.BIN", "wb");
-    if (!out_file)
+    if (fopen_s(&out_file, EC_file_name, "wb"))
     {
-        perror("Output file can't be opened");
+        printf("Output file %s can't be opened", EC_file_name);
         return ERR_FILE_OPEN;
     }
 
     /* Write EC image to output file */
-    read = fwrite(found, sizeof(char), filesize, out_file);
-    if (read != filesize)
+    readsize = fwrite(found, sizeof(char), filesize, out_file);
+    if (readsize != filesize)
     {
-        perror("Can't write output file EC.BIN");
+        printf("Can't write output file %s", EC_file_name);
         return ERR_FILE_WRITE;
     }
 
     /* Done */
-    printf("File EC.BIN successfully extracted\n");
+    printf("File %s successfully extracted\n", EC_file_name);
     return ERR_SUCCESS;
 }
