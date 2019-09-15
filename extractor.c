@@ -75,6 +75,8 @@ uint8_t* find_pattern(uint8_t* begin, uint8_t* end, const uint8_t* pattern, size
     size_t last;
     size_t slen;
 
+    end--;
+
     if (plen == 0 || !begin || !pattern || !end || end <= begin)
         return NULL;
 
@@ -122,6 +124,7 @@ int main(int argc, char* argv[])
     IFLASH_EC_IMG_HEADER* ec_header;
     char* read_file_name;
     char* insyde_file_name = "isflash.bin";
+    //char* insyde_out_file_name = "isflash-new.bin";
     char* biosFD_file_name = "BIOSFILE.FD";
     char* ini_file_name = "platforms.ini";
     char* EC_file_name = "EC.BIN";
@@ -139,21 +142,16 @@ int main(int argc, char* argv[])
         read_file_name = argv[1];
     }
     /* Detect if we are injecting the .ini back in */
-    inject_ini = 0;
-    if (argc >= 3)
-    {
-        inject_ini = 1;
-        //read_file_name = ini_file_name;
-    }
+    inject_ini = (argc >= 3) ? 1 : 0 ;
 
-    /* Open .bin file as input */
-    if(fopen_s(&in_file, read_file_name, "rb"))
+    /* Open isflash.bin file as input */
+    if(fopen_s(&in_file, read_file_name, "r+b"))
     {
         printf("InsydeFlash input file can't be opened: %s", read_file_name);
         return ERR_FILE_OPEN;
     }
 
-    /* Get input .bin file size */
+    /* Get isflash.bin file size */
     fseek(in_file, 0, SEEK_END);
     filesize = ftell(in_file);
     fseek(in_file, 0, SEEK_SET);
@@ -166,14 +164,15 @@ int main(int argc, char* argv[])
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* Read the whole BIOS file into input buffer */
+    /* Read the whole flash file into input buffer */
     readsize = fread((void*)insyde_buffer, sizeof(char), filesize, in_file);
     if (readsize != filesize)
     {
         printf("Can't read InsydeFlash file: %s", read_file_name);
         return ERR_FILE_READ;
     }
-    end = insyde_buffer + filesize - 1;
+    end = insyde_buffer + filesize;
+    //fclose(in_file); //close file for reading
 
 //Part 0A: Inject .INI back in: (if asked for)
     if (inject_ini)
@@ -204,7 +203,11 @@ int main(int argc, char* argv[])
             printf("Can't read %s file", ini_file_name);
             return ERR_FILE_READ;
         }
-        end_ini = ini_file_buffer + filesize_ini - 1;
+        else
+        {
+            printf("Read %lu bytes\n", readsize_ini);
+        }
+        end_ini = ini_file_buffer + readsize_ini;
 
 //PART 0B: copied from Part 2:
         /* Search for the signature in the input buffer */
@@ -217,10 +220,8 @@ int main(int argc, char* argv[])
 
         /* Populate the header and read used size */
         ini_header = (IFLASH_INI_IMG_HEADER*)found;
-        //found += sizeof(IFLASH_INI_IMG_HEADER);
         //TODO: check if less, and start zero-ing bytes out.
         ini_header->UsedSize = filesize_ini;    //set the size used header to the new ini's size
-        filesize = ini_header->UsedSize;
 
         if (filesize_ini > ini_header->FullSize)
         {
@@ -228,32 +229,34 @@ int main(int argc, char* argv[])
             return ERR_FILE_WRITE;
         }
 
-        /* Open output file */
-        if (fopen_s(&out_file, insyde_file_name, "wb"))
-        {
-            printf("Output file can't be opened: %s", insyde_file_name);
-            return ERR_FILE_OPEN;
-        }
-        // Seek to the found location to start writing.
-        fseek(out_file, found-insyde_buffer, SEEK_SET);
+        // Seek to the found location to start modifying.
+        fseek(in_file, found - insyde_buffer, SEEK_SET);
 
         /* Write Header with new size back*/
-        headersize = fwrite(found, sizeof(char), sizeof(IFLASH_INI_IMG_HEADER), out_file);
+        headersize = fwrite(ini_header, sizeof(char), sizeof(IFLASH_INI_IMG_HEADER), in_file);
         if (headersize != sizeof(IFLASH_INI_IMG_HEADER))
         {
             printf("Can't write .ini header to output file: %s", insyde_file_name);
             return ERR_FILE_WRITE;
         }
+        else
+        {
+            printf("Wrote %lu byte header to %lu\n", headersize, found - insyde_buffer);
+        }
         /* Write .INI file image to output file */
-        filesize = fwrite(found + sizeof(IFLASH_INI_IMG_HEADER), sizeof(char), filesize_ini, out_file);
+        filesize = fwrite(ini_file_buffer, sizeof(char), filesize_ini, in_file);
         if (filesize != filesize_ini)
         {
-            printf("Can't write .ini file to output file: %s", insyde_file_name);
+            printf("Write Error - can't write .ini file to modify output file: %s", insyde_file_name);
             return ERR_FILE_WRITE;
         }
-
+        else
+        {
+            printf("Wrote %lu bytes\n", filesize);
+        }
         /* Done */
         printf("File %s successfully injected back into %s\n", ini_file_name, insyde_file_name);
+        fclose(in_file);
         return ERR_SUCCESS;
     }
 
