@@ -4,9 +4,10 @@
     Modified: genBTC , 9/15/2019 
     - v0.3 (adds additional extractions and changes command line arguments)
     - v0.31 (adds the injector for platforms.ini)
+    - v0.32 removed code redundancy. converted each step down to a common function call. 9/29
 */
 
-#define PROGRAM_NAME "InsydeFlashExtractor v0.31+genBTC\n"
+#define PROGRAM_NAME "InsydeFlashExtractor v0.32+genBTC\n"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,51 +23,40 @@
 #define ERR_INVALID_PARAMETER   5
 #define ERR_OUT_OF_MEMORY       6
 
-const uint8_t IFLASH_BIOSIMG_SIGNATURE[] = { 
-    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 0x42, 0x49, 0x4F,
-    0x53, 0x49, 0x4D, 0x47
-}; // "$_IFLASH_BIOSIMG"
-#define IFLASH_BIOSIMG_SIGNATURE_LENGTH 16 
+#define IFLASH_SIGNATURE_LENGTH 16 
 
-typedef struct _IFLASH_BIOSIMG_HEADER {
-    uint8_t  Signature[IFLASH_BIOSIMG_SIGNATURE_LENGTH];
+typedef struct _IFLASH_HEADER {
+    uint8_t  Signature[IFLASH_SIGNATURE_LENGTH];
     uint32_t FullSize;
     uint32_t UsedSize;
-} IFLASH_BIOSIMG_HEADER;
+} IFLASH_HEADER;
+
+const uint8_t IFLASH_BIOSIMG_SIGNATURE[] = { 
+    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 
+    0x42, 0x49, 0x4F, 0x53, 0x49, 0x4D, 0x47
+}; // $_IFLASH_BIOSIMG
 
 const uint8_t IFLASH_INI_IMG_SIGNATURE[] = {
-    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 0x49, 0x4E, 0x49, 
-    0x5F, 0x49, 0x4D, 0x47
-}; // "$_IFLASH_INI_IMG"
-#define IFLASH_INI_IMG_SIGNATURE_LENGTH 16
-
-typedef struct _IFLASH_INI_IMG_HEADER {
-    uint8_t  Signature[IFLASH_INI_IMG_SIGNATURE_LENGTH];
-    uint32_t FullSize;
-    uint32_t UsedSize;
-} IFLASH_INI_IMG_HEADER;
+    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 
+    0x49, 0x4E, 0x49, 0x5F, 0x49, 0x4D, 0x47
+}; // $_IFLASH_INI_IMG
 
 const uint8_t IFLASH_EC_IMG_SIGNATURE[] = {
-    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 0x45, 0x43, 0x5F, 
-    0x49, 0x4D, 0x47, 0x5F,
-}; // "$_IFLASH_EC_IMG_"
-#define IFLASH_EC_IMG_SIGNATURE_LENGTH 16
+    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 
+    0x45, 0x43, 0x5F, 0x49, 0x4D, 0x47, 0x5F,
+}; // $_IFLASH_EC_IMG_
 
-typedef struct _IFLASH_EC_IMG_HEADER {
-    uint8_t  Signature[IFLASH_EC_IMG_SIGNATURE_LENGTH];
-    uint32_t FullSize;
-    uint32_t UsedSize;
-} IFLASH_EC_IMG_HEADER;
+const uint8_t IFLASH_DRV_IMG_SIGNATURE[] = {
+    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 
+    0x44, 0x52, 0x56, 0x5F, 0x49, 0x4D, 0x47
+}; // $_IFLASH_DRV_IMG 
 
-// also exists: 
-//
-// _IFLASH_DRV_IMG 
-// 0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 0x44, 0x52, 0x56, 0x5F, 0x49, 0x4D, 0x47, 
-// _IFLASH_BIOSCER
-// 0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 0x42, 0x49, 0x4F, 0x53, 0x43, 0x45, 0x52,
+const uint8_t IFLASH_BIOSCER_SIGNATURE[] = {
+    0x24, 0x5F, 0x49, 0x46, 0x4C, 0x41, 0x53, 0x48, 0x5F, 
+    0x42, 0x49, 0x4F, 0x53, 0x43, 0x45, 0x52
+};  // $_IFLASH_BIOSCER
 
-
-/* Implementation of GNU memmem function using Boyer-Moore-Horspool algorithm
+/* (Author: Nikolaj Schlej) Implementation of GNU memmem function using Boyer-Moore-Horspool algorithm
 *  Returns pointer to the beginning of found pattern or NULL if not found */
 uint8_t* find_pattern(uint8_t* begin, uint8_t* end, const uint8_t* pattern, size_t plen)
 {
@@ -103,149 +93,94 @@ uint8_t* find_pattern(uint8_t* begin, uint8_t* end, const uint8_t* pattern, size
     return NULL;
 }
 
+
+typedef struct _GetFile {
+    char * file_name;
+    FILE * the_file;
+    uint8_t * buffer;
+    uint8_t * end;
+    uint8_t * found;
+    uint32_t filesize;
+    int returnStatus;
+} GetFile;
+
+//prototype include (extractor.h)
+int extract_file(uint8_t* insyde_buffer, uint8_t* end, const char* file_name, const uint8_t* signature);
+GetFile read_GetFile(const char* file_name);
+
 /* Entry point */
 int main(int argc, char* argv[])
 {
-    FILE*    in_file;
-    FILE*    out_file;
-    FILE*    ini_file;
-    uint8_t* insyde_buffer;
-    uint8_t* ini_file_buffer;
-    uint8_t* end;
-    uint8_t* end_ini;
-    uint8_t* found;
-    uint32_t filesize;
-    uint32_t filesize_ini;
-    uint32_t readsize;
-    uint32_t readsize_ini;
-    uint32_t headersize;
-    IFLASH_BIOSIMG_HEADER* bios_header;
-    IFLASH_INI_IMG_HEADER* ini_header;
-    IFLASH_EC_IMG_HEADER* ec_header;
-    char* read_file_name;
     char* insyde_file_name = "isflash.bin";
-    //char* insyde_out_file_name = "isflash-new.bin";
     char* biosFD_file_name = "BIOSFILE.FD";
     char* ini_file_name = "platforms.ini";
     char* EC_file_name = "EC.BIN";
+    char* drvimg_file_name = "drv_img.bin";
+    char* bios_cert_file_name = "CERT.pem";
     int inject_ini;
+    GetFile File1, File2;
 
     printf(PROGRAM_NAME);
     /* Check for arguments count */
     if (argc == 1)
     {
         printf("Usage: %s <INPUTBIOSFILE> - Defaulting to %s\n", argv[0], insyde_file_name);
-        //return ERR_INVALID_PARAMETER;
-        read_file_name = insyde_file_name;
     }
     else {
-        read_file_name = argv[1];
+        insyde_file_name = argv[1];
     }
-    /* Detect if we are injecting the .ini back in */
+
+    /* Read File in, create buffer*/
+    File1 = read_GetFile(insyde_file_name);
+    if (File1.returnStatus != 0) return File1.returnStatus;
+
     inject_ini = (argc >= 3) ? 1 : 0 ;
-
-    /* Open isflash.bin file as input */
-    if(fopen_s(&in_file, read_file_name, "r+b"))
-    {
-        printf("InsydeFlash input file can't be opened: %s", read_file_name);
-        return ERR_FILE_OPEN;
-    }
-
-    /* Get isflash.bin file size */
-    fseek(in_file, 0, SEEK_END);
-    filesize = ftell(in_file);
-    fseek(in_file, 0, SEEK_SET);
-
-    /* Allocate memory for input buffer */
-    insyde_buffer = (uint8_t*)malloc(filesize);
-    if (!insyde_buffer)
-    {
-        printf("Can't allocate memory to read InsydeFlash file: %s", read_file_name);
-        return ERR_OUT_OF_MEMORY;
-    }
-    
-    /* Read the whole flash file into input buffer */
-    readsize = fread((void*)insyde_buffer, sizeof(char), filesize, in_file);
-    if (readsize != filesize)
-    {
-        printf("Can't read InsydeFlash file: %s", read_file_name);
-        return ERR_FILE_READ;
-    }
-    end = insyde_buffer + filesize;
-    //fclose(in_file); //close file for reading
-
-//Part 0A: Inject .INI back in: (if asked for)
+//INJECTOR: Detect if we are injecting the .ini back in, from command line
     if (inject_ini)
     {
+        //Part 1: Inject .INI back in: (if asked for)
         printf("Starting .ini file re-injection back into %s\n", insyde_file_name);
-        /* Open .ini input file */
-        if (fopen_s(&ini_file, ini_file_name, "rb"))
-        {
-            printf("%s input file can't be opened", ini_file_name);
-            return ERR_FILE_OPEN;
-        }
-        /* Get input .ini file size */
-        fseek(ini_file, 0, SEEK_END);
-        filesize_ini = ftell(ini_file);
-        fseek(ini_file, 0, SEEK_SET);
+        File2 = read_GetFile(ini_file_name);
+        if (File2.returnStatus != 0) return File2.returnStatus;
 
-        ini_file_buffer = (uint8_t*)malloc(filesize_ini);
-        if (!ini_file_buffer)
-        {
-            printf("Can't allocate memory to read %s file", ini_file_name);
-            return ERR_OUT_OF_MEMORY;
-        }
-
-        /* Read the whole .ini file into input buffer */
-        readsize_ini = fread((void*)ini_file_buffer, sizeof(char), filesize_ini, ini_file);
-        if (readsize_ini != filesize_ini)
-        {
-            printf("Can't read %s file", ini_file_name);
-            return ERR_FILE_READ;
-        }
-        else
-        {
-            printf("Read %lu bytes\n", readsize_ini);
-        }
-        end_ini = ini_file_buffer + readsize_ini;
-
-//PART 0B: copied from Part 2:
+        //PART 2: Write & Replace the embedded ini file, in-place
+        // Read:
         /* Search for the signature in the input buffer */
-        found = find_pattern(insyde_buffer, end, IFLASH_INI_IMG_SIGNATURE, IFLASH_INI_IMG_SIGNATURE_LENGTH);
-        if (!found)
+        File2.found = find_pattern(File2.buffer, File2.end, IFLASH_INI_IMG_SIGNATURE, IFLASH_SIGNATURE_LENGTH);
+        if (!File2.found)
         {
             printf("Insyde .ini file signature not found in input file\n");
             return ERR_NOT_FOUND;
         }
 
         /* Populate the header and read used size */
-        ini_header = (IFLASH_INI_IMG_HEADER*)found;
+        IFLASH_HEADER* ini_header = (IFLASH_HEADER*)File2.found;
         //TODO: check if less, and start zero-ing bytes out.
-        ini_header->UsedSize = filesize_ini;    //set the size used header to the new ini's size
+        ini_header->UsedSize = File2.filesize;    //set the size used header to the new ini's size
 
-        if (filesize_ini > ini_header->FullSize)
+        if (File2.filesize > ini_header->FullSize)
         {
-            printf(".ini file size %lu exceeds max allowable size %lu", filesize_ini, ini_header->FullSize);
+            printf(".ini file size %lu exceeds max allowable size %lu", File2.filesize, ini_header->FullSize);
             return ERR_FILE_WRITE;
         }
+        // Write:
+        /* Seek to the found location to start modifying */
+        fseek(File1.the_file, File2.found - File2.buffer, SEEK_SET);
 
-        // Seek to the found location to start modifying.
-        fseek(in_file, found - insyde_buffer, SEEK_SET);
-
-        /* Write Header with new size back*/
-        headersize = fwrite(ini_header, sizeof(char), sizeof(IFLASH_INI_IMG_HEADER), in_file);
-        if (headersize != sizeof(IFLASH_INI_IMG_HEADER))
+        /* Write Header with new size back */
+        uint32_t headersize = fwrite(ini_header, sizeof(char), sizeof(IFLASH_HEADER), File1.the_file);
+        if (headersize != sizeof(IFLASH_HEADER))
         {
             printf("Can't write .ini header to output file: %s", insyde_file_name);
             return ERR_FILE_WRITE;
         }
         else
         {
-            printf("Wrote %lu byte header to %lu\n", headersize, found - insyde_buffer);
+            printf("Wrote %lu byte header to %lu\n", headersize, File2.found - File2.buffer);
         }
         /* Write .INI file image to output file */
-        filesize = fwrite(ini_file_buffer, sizeof(char), filesize_ini, in_file);
-        if (filesize != filesize_ini)
+        uint32_t filesize = fwrite(File2.buffer, sizeof(char), File2.filesize, File1.the_file);
+        if (filesize != File2.filesize)
         {
             printf("Write Error - can't write .ini file to modify output file: %s", insyde_file_name);
             return ERR_FILE_WRITE;
@@ -256,105 +191,96 @@ int main(int argc, char* argv[])
         }
         /* Done */
         printf("File %s successfully injected back into %s\n", ini_file_name, insyde_file_name);
-        fclose(in_file);
+        fclose(File1.the_file);
         return ERR_SUCCESS;
     }
+//EXTRACTOR:
+    //Part 1: $_IFLASH_BIOSIMG
+    extract_file(File1.buffer, File1.end, biosFD_file_name, IFLASH_BIOSIMG_SIGNATURE);
+    //Part 2: $_IFLASH_INI_IMG
+    extract_file(File1.buffer, File1.end, ini_file_name, IFLASH_INI_IMG_SIGNATURE);
+    //Part 3: $_IFLASH_EC_IMG_
+    extract_file(File1.buffer, File1.end, EC_file_name, IFLASH_EC_IMG_SIGNATURE);
+    //Part 4: $_IFLASH_BIOSCER
+    extract_file(File1.buffer, File1.end, bios_cert_file_name, IFLASH_BIOSCER_SIGNATURE);
+    //Part 5: $_IFLASH_DRV_IMG (most of the file)
+    //extract_file(insyde_buffer, end, drvimg_file_name, IFLASH_DRV_IMG_SIGNATURE);
+    return;
+}
 
-
-//Part 1: $_IFLASH_BIOSIMG
+int extract_file(uint8_t* insyde_buffer, uint8_t* end, const char* file_name, const uint8_t* signature)
+{
     /* Search for the signature in the input buffer */
-    found = find_pattern(insyde_buffer, end, IFLASH_BIOSIMG_SIGNATURE, IFLASH_BIOSIMG_SIGNATURE_LENGTH);
+    uint8_t* found = find_pattern(insyde_buffer, end, signature, IFLASH_SIGNATURE_LENGTH);
     if (!found)
     {
-        printf("Insyde BIOS image signature not found in input file\n");
+        printf("Insyde image signature not found in input file\n");
         return ERR_NOT_FOUND;
     }
 
     /* Populate the header and read used size */
-    bios_header = (IFLASH_BIOSIMG_HEADER*) found;
-    found += sizeof(IFLASH_BIOSIMG_HEADER);
-    filesize = bios_header->UsedSize;
+    IFLASH_HEADER* header = (IFLASH_HEADER*)found;
+    found += sizeof(IFLASH_HEADER);
+    uint32_t filesize = header->UsedSize;
 
     /* Open output file */
-    if (fopen_s(&out_file, biosFD_file_name, "wb"))
+    FILE*    out_file;
+    if (fopen_s(&out_file, file_name, "wb"))
     {
-        printf("Output %s file can't be opened", biosFD_file_name);
+        printf("Output file %s can't be opened", file_name);
         return ERR_FILE_OPEN;
     }
 
-    /* Write BIOS image to output file */
-    readsize = fwrite(found, sizeof(char), filesize, out_file);
+    /* Write image to output file */
+    uint32_t readsize = fwrite(found, sizeof(char), filesize, out_file);
     if (readsize != filesize)
     {
-        printf("Can't write output file %s", biosFD_file_name);
-        return ERR_FILE_WRITE;
-    }
-    
-    /* Done */
-    printf("File %s successfully extracted\n", biosFD_file_name);
-
-//Part 2: $_IFLASH_INI_IMG
-    /* Search for the signature in the input buffer */
-    found = find_pattern(insyde_buffer, end, IFLASH_INI_IMG_SIGNATURE, IFLASH_INI_IMG_SIGNATURE_LENGTH);
-    if (!found)
-    {
-        printf("Insyde .ini file signature not found in input file\n");
-        return ERR_NOT_FOUND;
-    }
-
-    /* Populate the header and read used size */
-    ini_header = (IFLASH_INI_IMG_HEADER*)found;
-    found += sizeof(IFLASH_INI_IMG_HEADER);
-    filesize = ini_header->UsedSize;
-
-    /* Open output file */
-    if (fopen_s(&out_file, ini_file_name, "wb"))
-    {
-        printf("Output file %s can't be opened", ini_file_name);
-        return ERR_FILE_OPEN;
-    }
-
-    /* Write INI file image to output file */
-    readsize = fwrite(found, sizeof(char), filesize, out_file);
-    if (readsize != filesize)
-    {
-        printf("Can't write output file %s", ini_file_name);
+        printf("Can't write output file %s", file_name);
         return ERR_FILE_WRITE;
     }
 
     /* Done */
-    printf("File %s successfully extracted\n", ini_file_name);
-
-//Part 3: $_IFLASH_EC_IMG_
-    /* Search for the signature in the input buffer */
-    found = find_pattern(insyde_buffer, end, IFLASH_EC_IMG_SIGNATURE, IFLASH_EC_IMG_SIGNATURE_LENGTH);
-    if (!found)
-    {
-        printf("Insyde EC image signature not found in input file\n");
-        return ERR_NOT_FOUND;
-    }
-
-    /* Populate the header and read used size */
-    ec_header = (IFLASH_EC_IMG_HEADER*)found;
-    found += sizeof(IFLASH_EC_IMG_HEADER);
-    filesize = ec_header->UsedSize;
-
-    /* Open output file */
-    if (fopen_s(&out_file, EC_file_name, "wb"))
-    {
-        printf("Output file %s can't be opened", EC_file_name);
-        return ERR_FILE_OPEN;
-    }
-
-    /* Write EC image to output file */
-    readsize = fwrite(found, sizeof(char), filesize, out_file);
-    if (readsize != filesize)
-    {
-        printf("Can't write output file %s", EC_file_name);
-        return ERR_FILE_WRITE;
-    }
-
-    /* Done */
-    printf("File %s successfully extracted\n", EC_file_name);
+    printf("File %s successfully extracted\n", file_name);
+    fclose(out_file); //close file for reading
     return ERR_SUCCESS;
+}
+
+GetFile read_GetFile(const char* file_name)
+{
+    GetFile File1;
+    File1.file_name = file_name;
+    /* Open isflash.bin file as input */
+    if (fopen_s(&File1.the_file, file_name, "r+b"))
+    {
+        printf("InsydeFlash input file can't be opened: %s", file_name);
+        File1.returnStatus = ERR_FILE_OPEN;
+        return File1;
+    }
+
+    /* Get isflash.bin file size */
+    fseek(File1.the_file, 0, SEEK_END);
+    File1.filesize = ftell(File1.the_file);
+    fseek(File1.the_file, 0, SEEK_SET);
+
+    /* Allocate memory for input buffer */
+    File1.buffer = (uint8_t*)malloc(File1.filesize);
+    if (!File1.buffer)
+    {
+        printf("Can't allocate memory to read InsydeFlash file: %s", file_name);
+        File1.returnStatus = ERR_OUT_OF_MEMORY;
+        return File1;
+    }
+
+    /* Read the whole flash file into input buffer */
+    uint32_t readsize = fread((void*)File1.buffer, sizeof(char), File1.filesize, File1.the_file);
+    if (readsize != File1.filesize)
+    {
+        printf("Can't read InsydeFlash file: %s", file_name);
+        File1.returnStatus = ERR_FILE_READ;
+        return File1;
+    }
+    File1.end = File1.buffer + File1.filesize;
+    File1.returnStatus = ERR_SUCCESS;
+    return File1;
+    //fclose(the_file); //close file for reading
 }
